@@ -38,7 +38,7 @@ NVIDIA AI Cluster Runtime (AICR) generates validated GPU-accelerated Kubernetes 
 unset GITLAB_TOKEN
 
 # Development workflow
-make qualify      # Full check: test-coverage + lint + tuning-check + e2e + scan + license-check + api-diff (run before PR)
+make qualify      # Full check: test-coverage + lint + tuning-check + e2e + scan + license-check + api-diff + openapi-diff (run before PR)
 make test         # Unit tests with -race
 make lint         # golangci-lint + yamllint
 make scan         # Grype vulnerability scan
@@ -558,7 +558,7 @@ Process and unique findings below; the rule sections above (Error Wrapping, Cont
 
 ## Pull Request Requirements
 
-**Pre-push checklist:** Always run `make qualify` before pushing. This is the CI-equivalent gate that covers coverage-gated tests, linting (golangci-lint + yamllint + license headers, agents sync, docs filename/MDX gates, chart-version pins), tuning-check, e2e, vulnerability scan, license allowlist check, and API compatibility (api-diff). Do not substitute a subset of commands — `make qualify` is the closest local equivalent of the CI gate. A few checks run only in CI (e.g. the lychee docs link check on `docs/**` PRs, CodeQL, and the GPU test lanes), so a green local `qualify` does not guarantee every CI job passes.
+**Pre-push checklist:** Always run `make qualify` before pushing. This is the CI-equivalent gate that covers coverage-gated tests, linting (golangci-lint + yamllint + license headers, agents sync, docs filename/MDX gates, chart-version pins), tuning-check, e2e, vulnerability scan, license allowlist check, API compatibility (api-diff), and REST contract compatibility (openapi-diff). Do not substitute a subset of commands — `make qualify` is the closest local equivalent of the CI gate. A few checks run only in CI (e.g. the lychee docs link check on `docs/**` PRs, CodeQL, and the GPU test lanes), so a green local `qualify` does not guarantee every CI job passes.
 
 **Mandatory lint gate for Go changes:** If your PR changes any `.go` files, you MUST run `golangci-lint run -c .golangci.yaml` on each affected package path (e.g., `./pkg/recipe/...`, `./cmd/aicr/...`, `./tests/chainsaw/...`) and confirm zero issues before creating or pushing the PR. For a full module scan, use `./...`. Do not rely on CI to catch lint failures — fix them locally first. This applies even to PRs labeled as "documentation only" if they include Go code changes.
 
@@ -595,9 +595,9 @@ Follow the heading conventions in the `## Documentation Style` section above. Do
 
 **Test coverage gate (Go packages only; not YAML/docs/CI):**
 Before pushing a PR that changes Go source, check coverage on affected packages. Set `pkg` to the narrowest changed root — `$pkg/...` includes descendants (e.g. use `pkg=pkg/collector/topology`, not `pkg=pkg/collector`, unless you want a combined delta).
-1. Current: `GOFLAGS="-mod=vendor" go test -coverprofile=cover.out ./$pkg/...` on each changed package.
-2. Baseline (skip for new packages; commit changes first): `(git worktree add $TMPDIR/baseline origin/main && (cd $TMPDIR/baseline && GOFLAGS="-mod=vendor" go test -coverprofile=$TMPDIR/base.out ./$pkg/...); rc=$?; git worktree remove --force $TMPDIR/baseline; return $rc 2>/dev/null || (exit $rc))` — `$TMPDIR/base.out` survives cleanup and `rc` preserves test status. Compare with `go tool cover -func`.
-3. **Block** if `make test-coverage` fails (enforces the 80% floor from `.settings.yaml`, excluding `validators/` — see #1752; do not use per-package profiles for this check).
+1. Current: `go test -coverprofile=cover.out ./$pkg/...` on each changed package.
+2. Baseline (skip for new packages; commit changes first): `(git worktree add $TMPDIR/baseline origin/main && (cd $TMPDIR/baseline && go test -coverprofile=$TMPDIR/base.out ./$pkg/...); rc=$?; git worktree remove --force $TMPDIR/baseline; return $rc 2>/dev/null || (exit $rc))` — `$TMPDIR/base.out` survives cleanup and `rc` preserves test status. Compare with `go tool cover -func`.
+3. **Block** if `make test-coverage` fails (enforces the 83% floor from `.settings.yaml`, excluding `validators/` — see #1752; do not use per-package profiles for this check).
 4. **Flag** any package with per-package decrease > 0.5% (step 1 vs 2).
 5. **Block** if any new exported func/method (`git diff origin/main -- $pkg/`, added uppercase `func` lines) has 0% coverage — add tests first.
 6. Report the delta in the PR's Testing section (e.g. `pkg/recipe: 90.4% → 90.3% (-0.1%)`).
@@ -677,6 +677,10 @@ aicr snapshot --output snapshot.yaml
 # generation / validate readiness fails closed (ADR-015 gpuStack profile):
 #   az aks nodepool list -g <rg> --cluster-name <cluster> -o json > pools.json
 #   aicr snapshot --aks-gpu-pools pools.json --output snapshot.yaml
+# OKE only: include the add-on projection or snapshot-qualified recipe
+# generation / validate readiness fails closed (gpuStack profile):
+#   oci ce cluster list-addons --cluster-id <ocid> --all --output json > addons.json
+#   aicr snapshot --oke-addons addons.json --output snapshot.yaml
 
 # Generate recipe from snapshot
 aicr recipe --snapshot snapshot.yaml --intent training --output recipe.yaml

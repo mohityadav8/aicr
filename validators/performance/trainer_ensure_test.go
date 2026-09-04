@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -36,7 +37,7 @@ import (
 func TestEnsureTrainerInstalled_CompleteInstallIsLeftAlone(t *testing.T) {
 	client := newTrainerFakeClient(completeTrainerInstall()...)
 
-	refs, err := ensureTrainerInstalled(context.Background(), client, nil, false)
+	refs, err := ensureTrainerInstalled(context.Background(), client, fake.NewClientset(), nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,23 +48,22 @@ func TestEnsureTrainerInstalled_CompleteInstallIsLeftAlone(t *testing.T) {
 
 // TestEnsureTrainerInstalled_WaitsOnDiscoveredControllerName pins the discovered
 // controller name to the readiness wait. The probe locates the Deployment by label
-// because the Helm chart derives its name from the release, so a chart install
-// under a non-default release name is found under a name the self-install overlay
-// never uses. Waiting on the fixed overlay name instead would poll a Deployment
-// that does not exist, and waitForDeploymentReady treats NotFound as
-// not-ready-yet: a healthy controller would be reported as never ready after the
+// because a pre-existing chart installation can use a custom name even though the
+// in-tree values pin fullnameOverride. Waiting on the fixed self-install name would
+// poll a Deployment that does not exist, and waitForDeploymentReady treats NotFound
+// as not-ready-yet: a healthy controller would be reported as never ready after the
 // full timeout.
 func TestEnsureTrainerInstalled_WaitsOnDiscoveredControllerName(t *testing.T) {
-	const releaseDerivedName = "kft-custom-release-controller-manager"
+	const discoveredName = "kft-custom-release-controller-manager"
 
-	// A complete chart-style install in kubeflow whose controller carries a
-	// release-derived name rather than the overlay's fixed one.
+	// A complete chart-style install in kubeflow whose controller carries a custom
+	// name rather than the self-install overlay's fixed one.
 	objs := append(
 		withoutObject(trainerInstallIn("kubeflow"), func(o runtime.Object) bool {
 			u, ok := o.(*unstructured.Unstructured)
 			return ok && u.GetKind() == "Deployment"
 		}),
-		readyTrainerDeploymentNamed("kubeflow", releaseDerivedName),
+		readyTrainerDeploymentNamed("kubeflow", discoveredName),
 	)
 	client := newTrainerFakeClient(objs...)
 
@@ -78,16 +78,16 @@ func TestEnsureTrainerInstalled_WaitsOnDiscoveredControllerName(t *testing.T) {
 			return false, nil, nil
 		}
 		polled = append(polled, get.GetName())
-		if get.GetName() != releaseDerivedName {
+		if get.GetName() != discoveredName {
 			cancel()
 		}
 		return false, nil, nil
 	})
 
-	refs, err := ensureTrainerInstalled(ctx, client, nil, false)
+	refs, err := ensureTrainerInstalled(ctx, client, fake.NewClientset(), nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error waiting on the discovered controller %q (polled %v): %v",
-			releaseDerivedName, polled, err)
+			discoveredName, polled, err)
 	}
 	if len(refs) != 0 {
 		t.Errorf("refs = %d, want 0", len(refs))
@@ -100,8 +100,8 @@ func TestEnsureTrainerInstalled_WaitsOnDiscoveredControllerName(t *testing.T) {
 		t.Fatal("readiness wait issued no Deployment Get; the name assertion below would be vacuous")
 	}
 	for _, name := range polled {
-		if name != releaseDerivedName {
-			t.Errorf("readiness wait polled %q, want the discovered name %q", name, releaseDerivedName)
+		if name != discoveredName {
+			t.Errorf("readiness wait polled %q, want the discovered name %q", name, discoveredName)
 		}
 	}
 }
@@ -129,7 +129,7 @@ func TestEnsureTrainerInstalled_WaitsForPreexistingController(t *testing.T) {
 	})
 	defer cancel()
 
-	refs, err := ensureTrainerInstalled(ctx, client, nil, false)
+	refs, err := ensureTrainerInstalled(ctx, client, fake.NewClientset(), nil, false)
 	if err == nil {
 		t.Fatal("expected a not-ready pre-existing controller to fail, got nil error")
 	}
@@ -159,7 +159,7 @@ func TestEnsureTrainerInstalled_RefusesToInstallOverForeignNamespace(t *testing.
 			trainerValidatingWebhookName, "kubeflow"),
 	)
 
-	refs, err := ensureTrainerInstalled(context.Background(), client, nil, false)
+	refs, err := ensureTrainerInstalled(context.Background(), client, fake.NewClientset(), nil, false)
 	if err == nil {
 		t.Fatal("expected the installer to refuse installing over an installation in another namespace")
 	}
@@ -183,7 +183,7 @@ func TestEnsureTrainerInstalled_PreservesProbeErrorCode(t *testing.T) {
 		return true, nil, apierrors.NewServiceUnavailable("apiserver is down")
 	})
 
-	_, err := ensureTrainerInstalled(context.Background(), client, nil, false)
+	_, err := ensureTrainerInstalled(context.Background(), client, fake.NewClientset(), nil, false)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -213,7 +213,7 @@ func TestFoldCleanupError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := foldCleanupError(tt.bench, tt.cleanup)
+			got := foldCleanupError(tt.bench, tt.cleanup, "NCCL benchmark succeeded but Kubeflow Trainer cleanup failed")
 			if tt.want == nil {
 				if got != nil {
 					t.Fatalf("got %v, want nil", got)
@@ -232,7 +232,7 @@ func TestFoldCleanupError(t *testing.T) {
 func TestFoldCleanupError_PreservesCleanupCode(t *testing.T) {
 	cleanupErr := aicrErrors.New(aicrErrors.ErrCodeUnavailable, "apiserver is down")
 
-	got := foldCleanupError(nil, cleanupErr)
+	got := foldCleanupError(nil, cleanupErr, "fallback message")
 	if !stderrors.Is(got, aicrErrors.New(aicrErrors.ErrCodeUnavailable, "")) {
 		t.Errorf("cleanup error code was flattened: %v", got)
 	}
@@ -286,7 +286,7 @@ func TestEnsureTrainerInstalled_RecipeDrivenLifecycle(t *testing.T) {
 			defer withShortTrainerWait(t)()
 			client := newTrainerFakeClient(tt.objects...)
 
-			refs, err := ensureTrainerInstalled(context.Background(), client, nil, tt.declared)
+			refs, err := ensureTrainerInstalled(context.Background(), client, fake.NewClientset(), nil, tt.declared)
 
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
@@ -418,7 +418,7 @@ func TestEnsureTrainerInstalled_DeclaredRolloutDoesNotFallThrough(t *testing.T) 
 	// machine with egress a fall-through would download tens of megabytes first. The
 	// assertions below are what catch it — no error, no claimed resources, and a
 	// probe count proving the wait was entered.
-	refs, err := ensureTrainerInstalled(context.Background(), client, nil, true)
+	refs, err := ensureTrainerInstalled(context.Background(), client, fake.NewClientset(), nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -27,6 +27,7 @@ import (
 
 	"github.com/NVIDIA/aicr/pkg/defaults"
 	"github.com/NVIDIA/aicr/pkg/errors"
+	"github.com/NVIDIA/aicr/pkg/header"
 	"github.com/NVIDIA/aicr/pkg/recipe/oskind"
 	"github.com/NVIDIA/aicr/pkg/serializer"
 	"gopkg.in/yaml.v3"
@@ -375,6 +376,40 @@ type Criteria struct {
 
 	// Nodes is the number of worker nodes (0 means any/unspecified).
 	Nodes int `json:"nodes,omitempty" yaml:"nodes,omitempty"`
+}
+
+// FillUnsetWithAny replaces empty criteria dimensions with the "any" sentinel,
+// producing the same shape NewCriteria yields.
+//
+// "any" and "" are already equivalent to Matches, so this changes no resolution
+// outcome. It exists because the two request transports disagreed on what they
+// echoed back: a GET seeds every dimension from NewCriteria before applying
+// query parameters, while a decoded POST body leaves unspecified dimensions
+// empty. Identical requests therefore returned criteria objects that differed
+// by transport, which is a wart to freeze into a v1 contract.
+//
+// A nil receiver is returned unchanged so callers can apply it before their own
+// nil checks.
+func (c *Criteria) FillUnsetWithAny() *Criteria {
+	if c == nil {
+		return nil
+	}
+	if c.Service == "" {
+		c.Service = CriteriaServiceAny
+	}
+	if c.Accelerator == "" {
+		c.Accelerator = CriteriaAcceleratorAny
+	}
+	if c.Intent == "" {
+		c.Intent = CriteriaIntentAny
+	}
+	if c.OS == "" {
+		c.OS = CriteriaOSAny
+	}
+	if c.Platform == "" {
+		c.Platform = CriteriaPlatformAny
+	}
+	return c
 }
 
 // NewCriteria creates a new Criteria with all fields set to "any".
@@ -794,9 +829,23 @@ func ParseCriteriaFromValues(values url.Values, reg *CriteriaRegistry) (*Criteri
 const RecipeCriteriaKind = "RecipeCriteria"
 
 // RecipeCriteriaAPIVersion is the API version for RecipeCriteria resources.
-// It aliases RecipeAPIVersion (ultimately header.GroupVersion) so every AICR
-// artifact apiVersion has a single source of truth.
-const RecipeCriteriaAPIVersion = RecipeAPIVersion
+// RecipeCriteria is on the ADR-022 stable artifact track, so this aliases
+// header.StableGroupVersion directly rather than chaining through a recipe
+// constant; the track's target is header.GroupVersionV1.
+const RecipeCriteriaAPIVersion = header.StableGroupVersion
+
+func validateRecipeCriteriaHeader(kind, apiVersion string) error {
+	if kind != "" && kind != RecipeCriteriaKind {
+		return errors.New(errors.ErrCodeInvalidRequest,
+			fmt.Sprintf("invalid kind %q, expected %q", kind, RecipeCriteriaKind))
+	}
+	if apiVersion != "" && !header.IsSupportedAPIVersion(apiVersion) {
+		return errors.New(errors.ErrCodeInvalidRequest,
+			fmt.Sprintf("invalid apiVersion %q for %s, expected %q or %q; regenerate the criteria with a matching aicr version",
+				apiVersion, RecipeCriteriaKind, RecipeCriteriaAPIVersion, header.GroupVersionV1))
+	}
+	return nil
+}
 
 // RecipeCriteria represents a Kubernetes-style criteria resource.
 // This is the format used in criteria files and API requests.
@@ -928,12 +977,8 @@ func LoadCriteriaFromFile(path string, reg *CriteriaRegistry) (*Criteria, error)
 		return nil, errors.Wrap(errors.ErrCodeInternal, "failed to load criteria file", err)
 	}
 
-	// Validate kind and apiVersion
-	if raw.Kind != "" && raw.Kind != RecipeCriteriaKind {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid kind %q, expected %q", raw.Kind, RecipeCriteriaKind))
-	}
-	if raw.APIVersion != "" && raw.APIVersion != RecipeCriteriaAPIVersion {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid apiVersion %q, expected %q", raw.APIVersion, RecipeCriteriaAPIVersion))
+	if err := validateRecipeCriteriaHeader(raw.Kind, raw.APIVersion); err != nil {
+		return nil, err
 	}
 
 	return validateAndConvertRawSpec(&raw.Spec, reg)
@@ -972,12 +1017,8 @@ func LoadCriteriaFromFileWithContext(ctx context.Context, path string, reg *Crit
 		return nil, err
 	}
 
-	// Validate kind and apiVersion
-	if raw.Kind != "" && raw.Kind != RecipeCriteriaKind {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid kind %q, expected %q", raw.Kind, RecipeCriteriaKind))
-	}
-	if raw.APIVersion != "" && raw.APIVersion != RecipeCriteriaAPIVersion {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid apiVersion %q, expected %q", raw.APIVersion, RecipeCriteriaAPIVersion))
+	if err := validateRecipeCriteriaHeader(raw.Kind, raw.APIVersion); err != nil {
+		return nil, err
 	}
 
 	return validateAndConvertRawSpec(&raw.Spec, reg)
@@ -1007,12 +1048,8 @@ func loadCriteriaFromHTTPWithContext(ctx context.Context, url string, reg *Crite
 		return nil, errors.PropagateOrWrap(err, errors.ErrCodeInvalidRequest, "failed to deserialize criteria")
 	}
 
-	// Validate kind and apiVersion
-	if raw.Kind != "" && raw.Kind != RecipeCriteriaKind {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid kind %q, expected %q", raw.Kind, RecipeCriteriaKind))
-	}
-	if raw.APIVersion != "" && raw.APIVersion != RecipeCriteriaAPIVersion {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid apiVersion %q, expected %q", raw.APIVersion, RecipeCriteriaAPIVersion))
+	if err := validateRecipeCriteriaHeader(raw.Kind, raw.APIVersion); err != nil {
+		return nil, err
 	}
 
 	return validateAndConvertRawSpec(&raw.Spec, reg)
@@ -1094,12 +1131,8 @@ func ParseCriteriaFromBody(body io.Reader, contentType string, reg *CriteriaRegi
 		}
 	}
 
-	// Validate kind and apiVersion
-	if raw.Kind != "" && raw.Kind != RecipeCriteriaKind {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid kind %q, expected %q", raw.Kind, RecipeCriteriaKind))
-	}
-	if raw.APIVersion != "" && raw.APIVersion != RecipeCriteriaAPIVersion {
-		return nil, errors.New(errors.ErrCodeInvalidRequest, fmt.Sprintf("invalid apiVersion %q, expected %q", raw.APIVersion, RecipeCriteriaAPIVersion))
+	if err := validateRecipeCriteriaHeader(raw.Kind, raw.APIVersion); err != nil {
+		return nil, err
 	}
 
 	return validateAndConvertRawSpec(&raw.Spec, reg)

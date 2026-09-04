@@ -84,6 +84,11 @@ type BundleResolved struct {
 	// AcceleratedNodeTolerations is the parsed slice.
 	AcceleratedNodeTolerations []corev1.Toleration
 
+	// DRAEvictionNodeLabel is the parsed
+	// spec.bundle.scheduling.draEvictionNodeLabel. Nil when unset so command
+	// consumers can apply the NVIDIA-documented default.
+	DRAEvictionNodeLabel *bundlercfg.NodeLabel
+
 	// WorkloadGate is the parsed spec.bundle.scheduling.workloadGate taint.
 	// Nil when config did not set it.
 	WorkloadGate *corev1.Taint
@@ -219,6 +224,11 @@ func (b *BundleSpec) Resolve() (*BundleResolved, error) {
 		out.SystemNodeSelector = maps.Clone(b.Scheduling.SystemNodeSelector)
 		out.AcceleratedNodeSelector = maps.Clone(b.Scheduling.AcceleratedNodeSelector)
 		out.WorkloadSelector = maps.Clone(b.Scheduling.WorkloadSelector)
+		var err error
+		out.DRAEvictionNodeLabel, err = resolveDRAEvictionNodeLabel(b.Scheduling.DRAEvictionNodeLabel)
+		if err != nil {
+			return nil, err
+		}
 
 		if b.Scheduling.SystemNodeTolerations != nil {
 			tols, err := snapshotter.ParseTolerations(b.Scheduling.SystemNodeTolerations)
@@ -289,6 +299,18 @@ func validateAttestationEndpoints(a *AttestationSpec) error {
 	return bundlercfg.ValidateHTTPSURL("spec.bundle.attestation.rekorURL", a.RekorURL)
 }
 
+func resolveDRAEvictionNodeLabel(raw string) (*bundlercfg.NodeLabel, error) {
+	if raw == "" {
+		return nil, nil //nolint:nilnil // nil means the config omitted the optional label.
+	}
+	label, err := bundlercfg.ParseNodeLabel(raw)
+	if err != nil {
+		return nil, errors.PropagateOrWrap(err, errors.ErrCodeInvalidRequest,
+			"invalid spec.bundle.scheduling.draEvictionNodeLabel")
+	}
+	return &label, nil
+}
+
 // ValidateResolved is the typed-domain projection of ValidateSpec produced
 // by (*ValidateSpec).Resolve. Conversion from the wire form happens
 // exactly once at this boundary; CLI consumers layer flag overrides on
@@ -315,10 +337,19 @@ type ValidateResolved struct {
 	// config did not set the field.
 	ImagePullSecrets []string
 
-	// JobName is spec.validate.agent.jobName.
+	// JobName is spec.validate.agent.jobName — an optional Job name
+	// prefix, not a required name. Empty (config unset and no
+	// --job-name) lets the CLI's own default prefix ("aicr-validate")
+	// apply instead; either way the run ID is appended, so the deployed
+	// Job name is always run-scoped.
 	JobName string
 
-	// ServiceAccountName is spec.validate.agent.serviceAccountName.
+	// ServiceAccountName is spec.validate.agent.serviceAccountName. It is
+	// exact-if-exists: when a ServiceAccount of exactly this name already
+	// exists in the namespace, the live snapshot-capture agent runs as it
+	// verbatim and creates no RBAC for the run; otherwise it is an
+	// optional name prefix with the same empty-value behavior as JobName.
+	// See pkg/snapshotter.AgentConfig.ServiceAccountName.
 	ServiceAccountName string
 
 	// NodeSelector is spec.validate.agent.nodeSelector. Nil if unset;
@@ -619,10 +650,19 @@ type SnapshotResolved struct {
 	// config did not set the field.
 	ImagePullSecrets []string
 
-	// JobName is spec.snapshot.agent.jobName.
+	// JobName is spec.snapshot.agent.jobName — an optional Job name
+	// prefix, not a required name. Empty (config unset and no
+	// --job-name) lets the CLI's own default prefix ("aicr") apply
+	// instead; either way the run ID is appended, so the deployed Job
+	// name is always run-scoped.
 	JobName string
 
-	// ServiceAccountName is spec.snapshot.agent.serviceAccountName.
+	// ServiceAccountName is spec.snapshot.agent.serviceAccountName. It is
+	// exact-if-exists: when a ServiceAccount of exactly this name already
+	// exists in the namespace, the agent runs as it verbatim and creates
+	// no RBAC for the run; otherwise it is an optional name prefix with
+	// the same empty-value behavior as JobName. See
+	// pkg/snapshotter.AgentConfig.ServiceAccountName.
 	ServiceAccountName string
 
 	// NodeSelector is spec.snapshot.agent.nodeSelector. Nil if unset;

@@ -169,6 +169,8 @@ output. **They contain no business logic.** All business logic lives
 in functional packages, composed by the `pkg/client/v1` facade so
 both entry points share it. Adding business logic to `pkg/cli` or
 `pkg/server` handlers is a boundary violation and will be rejected.
+This boundary is enforced mechanically by a CI gate — see
+[architecture-gate.md](architecture-gate.md).
 
 ## Packages
 
@@ -201,7 +203,6 @@ both entry points share it. Adding business logic to `pkg/cli` or
 | `pkg/oci` | OCI artifact push/pull for evidence and bundles |
 | `pkg/mirror` | Air-gap mirror for charts and images |
 | `pkg/trust` | Sigstore trust root management |
-| `pkg/build` | Build provenance metadata |
 | **Cross-cutting** | |
 | `pkg/k8s/client` | Singleton Kubernetes clientset (in-cluster + kubeconfig) |
 | `pkg/k8s/pod` | Shared K8s Job/Pod helpers (wait, logs, ConfigMap URI parsing) |
@@ -309,6 +310,7 @@ By contributor task:
 - **Adding an HTTP endpoint** → [api-server.md](api-server.md)
 - **Adding a snapshot collector** → [collector.md](collector.md)
 - **Adding a validator check** → [validator.md](validator.md)
+- **Understanding or fixing a facade boundary gate failure** → [architecture-gate.md](architecture-gate.md)
 - **Adding a bundle-time component validation** → [validator.md](validator.md#component-validations-bundle-time)
 - **Producing and signing recipe evidence** → [evidence-publishing.md](evidence-publishing.md)
 - **Ingesting published evidence into the source-keyed tree (GP2)** → [evidence-ingest.md](evidence-ingest.md)

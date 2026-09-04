@@ -22,7 +22,9 @@ executable bits or `./script.sh` invocation.
 - `coverage_report` (optional): Whether to generate a coverage report (default: "false")
 - `coverage_threshold` (optional): Minimum coverage percentage (default: empty)
 - `helm_version` (required): Helm version from `load-versions`
+- `setup_envtest_version` (required): setup-envtest version from `load-versions`
 - `apidiff_version` (optional): apidiff version from `load-versions`; when set, installs apidiff and runs `make api-diff` (default: empty, which skips both steps)
+- `oasdiff_version` (**required**): oasdiff version from `load-versions`; installs oasdiff before `make test` and runs `make openapi-diff` after. Not optional, because `make test` runs `tools/openapi-diff_test.sh`, which fails in CI when oasdiff is absent rather than skipping — the REST contract gate cannot be silently unverified
 
 Callers that set `apidiff_version` must check out full history with
 `fetch-depth: 0` so `make api-diff` can resolve a reachable stable release tag.
@@ -68,7 +70,7 @@ This action runs `tools/setup-tools --skip-go --skip-docker` in auto mode, which
 
 #### `install-go-licenses/`
 **Purpose**: Install the pinned `go-licenses` with `GOFLAGS` cleared
-**When to use**: Any job running `make license-check`, `make notices`, or `make notices-check`
+**When to use**: Any job running `make license-check`, `make notices`, or `make release`
 **Inputs**:
 - `version` (required): go-licenses version from `load-versions` (`.settings.yaml` `linting.go_licenses`)
 
@@ -200,20 +202,26 @@ resolve its per-platform manifest digests, and generate SBOM + VEX + provenance
 
 #### `sbom-and-attest/`
 
-**Purpose**: Generate the SPDX SBOM, OpenVEX and SLSA provenance attestations
-for an image whose digests are already known
+**Purpose**: Generate the CycloneDX SBOM, OpenVEX and SLSA provenance
+attestations for an image whose digests are already known
 **When to use**: When you already have the digests (e.g., from build output)
 **Inputs**:
 - `image_name` (required): One of the seven fixed AICR release image names
-- `image_digest` (required): Multi-platform index digest; subject for the VEX and provenance attestations
-- `amd64_digest` (required): `linux/amd64` manifest digest; subject for the amd64 SBOM
-- `arm64_digest` (required): `linux/arm64` manifest digest; subject for the arm64 SBOM
+- `image_digest` (required): Multi-platform index digest; subject for the provenance attestation
+- `amd64_digest` (required): `linux/amd64` manifest digest; subject for the amd64 SBOM and VEX
+- `arm64_digest` (required): `linux/arm64` manifest digest; subject for the arm64 SBOM and VEX
 
 Cosign is pinned from `.settings.yaml` via `load-versions`, and every
 `cosign attest` call sets `--new-bundle-format=true` explicitly so the
 attestations land through the OCI referrers path by our decision rather than by
-an installer default. Per-platform SBOM subjects and index-level VEX subjects
-are explained in the action's header comment.
+an installer default. The SBOM and the VEX share a per-platform subject and are
+deliberately in different formats so a referrers listing can tell them apart;
+`tools/openvex-bind` rewrites `.openvex.json` product identifiers to the
+platform manifest digest before the VEX is signed. Both the committed source and
+every generated projection are validated by `openvex-guard.sh`, which holds the
+rules and the pinned v0.2.0 `@context` once so the two checks cannot drift; the
+only rule that differs is that a projection may carry an empty `statements`
+array. The action's header comment explains the full subject policy.
 
 **Example**:
 
@@ -382,7 +390,9 @@ jobs:
         with:
           go_version: ${{ steps.versions.outputs.go }}
           helm_version: ${{ steps.versions.outputs.helm }}
+          setup_envtest_version: ${{ steps.versions.outputs.setup_envtest }}
           apidiff_version: ${{ steps.versions.outputs.apidiff }}
+          oasdiff_version: ${{ steps.versions.outputs.oasdiff }}
           coverage_report: 'true'
       - uses: ./.github/actions/go-lint
         with:
@@ -407,6 +417,7 @@ jobs:
           go_version: ${{ steps.versions.outputs.go }}
           helm_version: ${{ steps.versions.outputs.helm }}
           apidiff_version: ${{ steps.versions.outputs.apidiff }}
+          oasdiff_version: ${{ steps.versions.outputs.oasdiff }}
       - uses: ./.github/actions/go-build-release
         id: release
         with:

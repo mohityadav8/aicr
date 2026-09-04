@@ -100,7 +100,7 @@ components:
     helm:
       defaultRepository: https://helm.ngc.nvidia.com/nvidia
       defaultChart: nvidia/gpu-operator
-      defaultVersion: v26.3.3
+      defaultVersion: v26.7.0
       defaultNamespace: gpu-operator
     nodeScheduling:
       system:
@@ -184,6 +184,30 @@ components:
       defaultRepository: ""
       defaultNamespace: kube-system
 
+  # GKE COS NVIDIA driver installer (issue #1716): Google's cos-gpu-installer
+  # DaemonSet as an AICR-managed, values-gated component. Present
+  # unconditionally in the gke-cos chain; renders nothing unless the gpuStack
+  # bundle-installer profile value flips installer.enabled true. The
+  # DaemonSet carries its own nodeAffinity (GPU nodes without GKE-managed
+  # driver labels), so no nodeSelector injection — only accelerated
+  # tolerations flow through.
+  - name: gcp-driver-installer
+    displayName: gcp-driver-installer
+    valueOverrideKeys:
+      - gcpdriverinstaller
+    healthCheck:
+      assertFile: checks/gcp-driver-installer/health-check.yaml
+    helm:
+      # Manifest-only component - no external Helm chart, uses manifestFiles
+      defaultRepository: ""
+      defaultNamespace: kube-system
+    manifestFiles:
+      - components/gcp-driver-installer/manifests/nvidia-driver-installer.yaml
+    nodeScheduling:
+      accelerated:
+        tolerationPaths:
+          - acceleratedTolerations
+
   - name: aws-efa
     displayName: aws-efa
     valueOverrideKeys:
@@ -237,7 +261,7 @@ components:
     helm:
       defaultRepository: oci://ghcr.io/nvidia/nodewright/charts
       defaultChart: nodewright
-      defaultVersion: v0.17.1
+      defaultVersion: v0.18.0
       defaultNamespace: skyhook
     nodeScheduling:
       nodeCountPaths:
@@ -317,7 +341,7 @@ components:
     helm:
       defaultRepository: oci://ghcr.io/nvidia
       defaultChart: nvsentinel
-      defaultVersion: v1.9.0
+      defaultVersion: v1.20.0
       defaultNamespace: nvsentinel
     nodeScheduling:
       system:
@@ -330,17 +354,18 @@ components:
       # nvsentinel.dgxc.nvidia.com/driver.installed by watching for a GPU
       # driver pod. Where the driver ships in the node image (or the host)
       # and no driver pod exists (AKS gpuStack=azure-managed, GKE COS
-      # gpuStack=gke-default, OKE, Kind), the label is never applied and
+      # gpuStack=gke-default, OKE gpuStack=oci-managed,
+      # Kind), the label is never applied and
       # metadata-collector plus both syslog-health-monitor DaemonSets sit
       # at 0 desired pods — with no error and no event, while
       # gpu-health-monitor stays healthy on the DCGM label. The chart
       # automates the remedy via labeler.assumeDriverInstalled
       # (--assume-driver-installed, NVSentinel design 018's Manual
       # Labeling Procedure). Every one of those recipes now assigns it
-      # itself — from the gpuStack profile on AKS and GKE-COS, at overlay
-      # level on OKE and Kind (#2181) — so this gate is defense in depth
+      # itself — from the gpuStack profile on AKS, GKE-COS, and OKE, at
+      # overlay level on Kind (#2181) — so this gate is defense in depth
       # rather than the primary mechanism. GKE
-      # gpuStack=driver-installer and AKS gpuStack=operator-managed
+      # gpuStack=bundle-installer and AKS gpuStack=operator-managed
       # assign an explicit false: a driver pod exists there for the
       # labeler to detect. Issue #2175.
       - function: CheckNVSentinelDriverLabelDetectable
@@ -372,7 +397,7 @@ components:
     helm:
       defaultRepository: oci://registry.k8s.io/dra-driver-nvidia/charts
       defaultChart: dra-driver-nvidia-gpu
-      defaultVersion: "0.4.1"
+      defaultVersion: "0.5.0"
       defaultNamespace: nvidia-dra-driver
     nodeScheduling:
       system:
@@ -565,12 +590,17 @@ components:
     displayName: grove
     valueOverrideKeys:
       - grove
+    # Upgrading from v0.1.0-alpha.8 (or earlier) requires a CRD migration --
+    # see "Upgrade Notes" > grove in docs/user/component-catalog.md for the
+    # full, executable steps (helm upgrade/install.sh never applies changed
+    # crds/, and alpha.8's orphaned ClusterTopology CRD shortname-collides
+    # with alpha.12's replacement). Verified live on aicr-gb300, 2026-09-02.
     healthCheck:
       assertFile: checks/grove/health-check.yaml
     helm:
       defaultRepository: oci://ghcr.io/ai-dynamo/grove
       defaultChart: grove-charts
-      defaultVersion: "v0.1.0-alpha.8"
+      defaultVersion: "v0.1.0-alpha.12"
       defaultNamespace: dynamo-system
     nodeScheduling:
       system:
@@ -589,18 +619,14 @@ components:
     helm:
       defaultRepository: https://helm.ngc.nvidia.com/nvidia/ai-dynamo
       defaultChart: dynamo-platform
-      defaultVersion: "1.2.1"
+      defaultVersion: "1.4.2"
       defaultNamespace: dynamo-system
-    storageClassPaths:
-      - nats.config.jetstream.fileStore.pvc.storageClassName
     nodeScheduling:
       system:
         nodeSelectorPaths:
           - dynamo-operator.controllerManager.nodeSelector
-          - nats.podTemplate.merge.spec.nodeSelector
         tolerationPaths:
           - dynamo-operator.controllerManager.tolerations
-          - nats.podTemplate.merge.spec.tolerations
 
   - name: agentgateway-crds
     displayName: agentgateway-crds
@@ -1077,7 +1103,7 @@ components:
     helm:
       defaultRepository: oci://registry.k8s.io/dra-driver-nvidia/charts
       defaultChart: dra-driver-nvidia-gpu
-      defaultVersion: "0.4.1"
+      defaultVersion: "0.5.0"
       defaultNamespace: nvidia-dra-driver
     nodeScheduling:
       system:

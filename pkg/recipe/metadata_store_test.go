@@ -721,6 +721,7 @@ func TestSlurmLeavesClearInheritedPerformancePhase(t *testing.T) {
 
 	for _, name := range []string{
 		"gb200-eks-ubuntu-training-slurm",
+		"gb300-eks-ubuntu-training-slurm",
 		"h100-aks-ubuntu-training-slurm",
 		"h100-eks-ubuntu-training-slurm",
 		"h100-gke-cos-training-slurm",
@@ -756,6 +757,7 @@ func TestSlurmLeavesIncludeSharedStoragePreManifest(t *testing.T) {
 	const wantManifest = "components/slinky-slurm/manifests/shared-storage-pvcs.yaml"
 	for _, name := range []string{
 		"gb200-eks-ubuntu-training-slurm",
+		"gb300-eks-ubuntu-training-slurm",
 		"h100-aks-ubuntu-training-slurm",
 		"h100-eks-ubuntu-training-slurm",
 		"h100-gke-cos-training-slurm",
@@ -789,6 +791,7 @@ func TestSlurmLeavesIncludeEnrootPreManifest(t *testing.T) {
 	const wantManifest = "components/slinky-slurm/manifests/enroot-config.yaml"
 	for _, name := range []string{
 		"gb200-eks-ubuntu-training-slurm",
+		"gb300-eks-ubuntu-training-slurm",
 		"h100-aks-ubuntu-training-slurm",
 		"h100-eks-ubuntu-training-slurm",
 		"h100-gke-cos-training-slurm",
@@ -963,6 +966,7 @@ func TestGPUSlurmLeavesConfigureGRESAndTaskCgroup(t *testing.T) {
 		wantGPUs int
 	}{
 		{name: "gb200-eks-ubuntu-training-slurm", wantGres: "gpu:gb200:4", wantGPUs: 4},
+		{name: "gb300-eks-ubuntu-training-slurm", wantGres: "gpu:gb300:4", wantGPUs: 4},
 		{name: "h100-aks-ubuntu-training-slurm", wantGres: "gpu:h100:8", wantGPUs: 8},
 		{name: "h100-eks-ubuntu-training-slurm", wantGres: "gpu:h100:8", wantGPUs: 8},
 		{name: "h100-gke-cos-training-slurm", wantGres: "gpu:h100:8", wantGPUs: 8},
@@ -1043,7 +1047,16 @@ func TestSlurmLeavesAppendConformanceHealthCheck(t *testing.T) {
 		"secure-accelerator-access",
 		"slinky-slurm-health",
 	}
-	gb200ConformanceChecks := []string{
+	// The gb200/gb300 EKS Slurm leaves differ from the h100 list above in two
+	// INDEPENDENT ways; do not collapse them into one explanation:
+	//   + slinky-slurm-imex-channel — added by the leaf, genuinely IMEX-specific.
+	//   - robust-controller, secure-accelerator-access — absent because
+	//     gb200-eks-training.yaml and gb300-eks-training.yaml do not declare
+	//     them while h100-eks-training.yaml does. That is a property of the
+	//     accelerator training bases, NOT of IMEX or of Slurm; gb300 is not
+	//     categorically excluded, since gb300-eks-ubuntu-inference-dynamo
+	//     declares both. Naming this fixture for IMEX would misattribute it.
+	gbEKSSlurmConformanceChecks := []string{
 		"platform-health",
 		"gpu-operator-health",
 		"dra-support",
@@ -1072,7 +1085,8 @@ func TestSlurmLeavesAppendConformanceHealthCheck(t *testing.T) {
 		name string
 		want []string
 	}{
-		{name: "gb200-eks-ubuntu-training-slurm", want: gb200ConformanceChecks},
+		{name: "gb200-eks-ubuntu-training-slurm", want: gbEKSSlurmConformanceChecks},
+		{name: "gb300-eks-ubuntu-training-slurm", want: gbEKSSlurmConformanceChecks},
 		{name: "h100-aks-ubuntu-training-slurm", want: conformanceChecks},
 		{name: "h100-eks-ubuntu-training-slurm", want: conformanceChecks},
 		{name: "h100-gke-cos-training-slurm", want: conformanceChecks},
@@ -1099,16 +1113,42 @@ func TestSlurmLeavesAppendConformanceHealthCheck(t *testing.T) {
 	}
 }
 
-func TestGB200EKSSlurmWiresIMEXComputeDomain(t *testing.T) {
+// TestGPUSlurmLeavesWireIMEXComputeDomain covers every IMEX-capable Slurm leaf.
+// The wiring under test (SwitchType, the ComputeDomain pre-manifest, and the
+// NodeSet/ComputeDomain ResourceClaimTemplate identity match) is transposed
+// verbatim between leaves, so a new leaf that drops or typos any part of it
+// must fail here by name rather than only as an opaque golden-digest diff.
+func TestGPUSlurmLeavesWireIMEXComputeDomain(t *testing.T) {
 	ctx := context.Background()
 	store, err := loadMetadataStore(ctx)
 	if err != nil {
 		t.Fatalf("failed to load metadata store: %v", err)
 	}
 
-	leaf, ok := store.GetRecipeByName("gb200-eks-ubuntu-training-slurm")
+	tests := []struct {
+		name     string
+		wantGres string
+	}{
+		{name: "gb200-eks-ubuntu-training-slurm", wantGres: "gpu:gb200:4"},
+		{name: "gb300-eks-ubuntu-training-slurm", wantGres: "gpu:gb300:4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertSlurmLeafWiresIMEXComputeDomain(t, ctx, store, tt.name, tt.wantGres)
+		})
+	}
+}
+
+//nolint:revive // ctx follows t, the conventional order for a t.Helper assertion.
+func assertSlurmLeafWiresIMEXComputeDomain(
+	t *testing.T, ctx context.Context, store *MetadataStore, leafName, wantGres string,
+) {
+
+	t.Helper()
+
+	leaf, ok := store.GetRecipeByName(leafName)
 	if !ok {
-		t.Fatal("overlay gb200-eks-ubuntu-training-slurm not found in store")
+		t.Fatalf("overlay %s not found in store", leafName)
 	}
 	result, err := store.BuildRecipeResult(ctx, leaf.Spec.Criteria)
 	if err != nil {
@@ -1139,15 +1179,15 @@ func TestGB200EKSSlurmWiresIMEXComputeDomain(t *testing.T) {
 		t.Errorf("slinky-slurm dependencyRefs = %v, want nvidia-dra-driver-gpu", slurm.DependencyRefs)
 	}
 
-	values, err := result.GetValuesForComponent("slinky-slurm")
+	values, err := result.GetValuesForComponentWithContext(ctx, "slinky-slurm")
 	if err != nil {
-		t.Fatalf("GetValuesForComponent(slinky-slurm) failed: %v", err)
+		t.Fatalf("GetValuesForComponentWithContext(slinky-slurm) failed: %v", err)
 	}
 	if got := valueAtPath[string](t, values, "controller", "extraConfMap", "SwitchType"); got != "switch/nvidia_imex" {
 		t.Errorf("controller.extraConfMap.SwitchType = %q, want switch/nvidia_imex", got)
 	}
-	if got := valueAtPath[string](t, values, "nodesets", "slinky", "extraConfMap", "Gres"); got != "gpu:gb200:4" {
-		t.Errorf("nodesets.slinky.extraConfMap.Gres = %q, want gpu:gb200:4", got)
+	if got := valueAtPath[string](t, values, "nodesets", "slinky", "extraConfMap", "Gres"); got != wantGres {
+		t.Errorf("nodesets.slinky.extraConfMap.Gres = %q, want %q", got, wantGres)
 	}
 
 	podClaims := valueAtPath[[]any](t, values, "nodesets", "slinky", "podSpec", "resourceClaims")
@@ -1731,7 +1771,7 @@ func TestMixinConstraintFailureExcludesOnlyAffectedCandidateChain(t *testing.T) 
 		Mixins: map[string]*RecipeMixin{
 			"kernel-gate": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{
@@ -1748,7 +1788,7 @@ func TestMixinConstraintFailureExcludesOnlyAffectedCandidateChain(t *testing.T) 
 			},
 			"monitoring-gate": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{
@@ -1918,7 +1958,7 @@ func TestMixinConstraintFailurePreservesSharedAncestorsForSurvivingLeaf(t *testi
 		Mixins: map[string]*RecipeMixin{
 			"failing-mixin": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{Name: "failing-mixin"},
@@ -1931,7 +1971,7 @@ func TestMixinConstraintFailurePreservesSharedAncestorsForSurvivingLeaf(t *testi
 			},
 			"passing-mixin": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{Name: "passing-mixin"},
@@ -2073,7 +2113,7 @@ func TestMixinConstraintFailureDegradesForUnstatedDimension(t *testing.T) {
 		Mixins: map[string]*RecipeMixin{
 			"monitoring-gate": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{Name: "monitoring-gate"},
@@ -2173,7 +2213,7 @@ func TestMixinConstraintFailClosedOnInternalEvaluatorError(t *testing.T) {
 		Mixins: map[string]*RecipeMixin{
 			"os-gate": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{Name: "os-gate"},
@@ -2238,7 +2278,7 @@ func TestMixinConstraintFailClosedOnUnstructuredEvaluatorError(t *testing.T) {
 		Mixins: map[string]*RecipeMixin{
 			"os-gate": {
 				Kind:       RecipeMixinKind,
-				APIVersion: RecipeAPIVersion,
+				APIVersion: RecipeMetadataAPIVersion,
 				Metadata: struct {
 					Name string `json:"name" yaml:"name"`
 				}{Name: "os-gate"},
@@ -2716,8 +2756,169 @@ spec:
 	if !errors.Is(err, aicrerrors.New(aicrerrors.ErrCodeInvalidRequest, "")) {
 		t.Fatalf("error code = %v, want ErrCodeInvalidRequest", err)
 	}
-	if !strings.Contains(err.Error(), `requires kind "RecipeMetadata"`) {
+	if !strings.Contains(err.Error(), `expected "RecipeMetadata"`) {
 		t.Fatalf("error = %v, want RecipeMetadata kind requirement", err)
+	}
+}
+
+func TestLoadMetadataStore_AcceptsReleaseNTargetCatalogHeaders(t *testing.T) {
+	provider := newInMemoryProvider("target-catalog", map[string][]byte{
+		"overlays/base.yaml": []byte(`kind: RecipeMetadata
+apiVersion: aicr.run/v1beta1
+metadata:
+  name: base
+spec:
+  componentRefs: []
+`),
+		"overlays/target.yaml": []byte(`kind: RecipeMetadata
+apiVersion: aicr.run/v1beta1
+metadata:
+  name: target
+spec:
+  criteria:
+    service: eks
+  componentRefs: []
+`),
+		"overlays/headerless.yaml": []byte(`spec:
+  criteria:
+    service: gke
+  componentRefs: []
+`),
+		"mixins/target.yaml": []byte(`kind: RecipeMixin
+apiVersion: aicr.run/v1beta1
+metadata:
+  name: target-mixin
+spec: {}
+`),
+		"evidence/unrelated.yaml": []byte("signers:\n  first-party: []\n"),
+		"strict-config.yaml": []byte(`kind: AICRConfig
+apiVersion: aicr.run/v1alpha2
+spec:
+  recipe:
+    criteriaStrict: true
+`),
+	})
+	t.Cleanup(func() { EvictCachedStore(provider) })
+
+	store, err := LoadMetadataStoreFor(t.Context(), provider)
+	if err != nil {
+		t.Fatalf("LoadMetadataStoreFor() error = %v", err)
+	}
+	if _, ok := store.GetRecipeByName("target"); !ok {
+		t.Fatal("target-version RecipeMetadata was not loaded")
+	}
+	if _, ok := store.Mixins["target-mixin"]; !ok {
+		t.Fatal("target-version RecipeMixin was not loaded")
+	}
+	if _, ok := store.Overlays[""]; ok {
+		t.Fatal("unrelated headerless YAML was misclassified as RecipeMetadata")
+	}
+	if got := len(store.Overlays); got != 1 {
+		t.Fatalf("loaded %d overlays, want only the declared target overlay", got)
+	}
+}
+
+func TestLoadMetadataStore_AcceptsReleaseNProfileTarget(t *testing.T) {
+	provider := newInMemoryProvider("target-profile-catalog", map[string][]byte{
+		"overlays/base.yaml": []byte(`kind: RecipeMetadata
+apiVersion: aicr.run/v1alpha2
+metadata:
+  name: base
+spec:
+  componentRefs: []
+`),
+		"overlays/profile.yaml": []byte(`kind: RecipeMetadata
+apiVersion: aicr.run/v1beta2
+metadata:
+  name: profile
+spec:
+  criteria:
+    service: aks
+  profile:
+    name: gpuStack
+    default: driver-installed
+    values:
+      driver-installed: {}
+`),
+	})
+	t.Cleanup(func() { EvictCachedStore(provider) })
+
+	store, err := LoadMetadataStoreFor(t.Context(), provider)
+	if err != nil {
+		t.Fatalf("LoadMetadataStoreFor() error = %v", err)
+	}
+	if _, ok := store.GetRecipeByName("profile"); !ok {
+		t.Fatal("target-version profile RecipeMetadata was not loaded")
+	}
+}
+
+func TestLoadMetadataStore_RejectsInvalidCatalogHeaders(t *testing.T) {
+	validBase := []byte(`kind: RecipeMetadata
+apiVersion: aicr.run/v1alpha2
+metadata:
+  name: base
+spec:
+  componentRefs: []
+`)
+	tests := []struct {
+		name    string
+		path    string
+		data    []byte
+		wantSub string
+	}{
+		{
+			name:    "empty RecipeMetadata version",
+			path:    "overlays/bad.yaml",
+			data:    []byte("kind: RecipeMetadata\napiVersion: \nmetadata:\n  name: bad\nspec: {}\n"),
+			wantSub: `apiVersion ""`,
+		},
+		{
+			name:    "unknown RecipeMetadata version",
+			path:    "overlays/bad.yaml",
+			data:    []byte("kind: RecipeMetadata\napiVersion: aicr.run/v9\nmetadata:\n  name: bad\nspec: {}\n"),
+			wantSub: `apiVersion "aicr.run/v9"`,
+		},
+		{
+			name:    "wrong AICR kind",
+			path:    "overlays/bad.yaml",
+			data:    []byte("kind: RecipeMetdata\napiVersion: aicr.run/v1alpha2\nmetadata:\n  name: bad\nspec: {}\n"),
+			wantSub: `kind "RecipeMetdata"`,
+		},
+		{
+			name:    "empty RecipeMixin version",
+			path:    "mixins/bad.yaml",
+			data:    []byte("kind: RecipeMixin\napiVersion: \nmetadata:\n  name: bad\nspec: {}\n"),
+			wantSub: `apiVersion ""`,
+		},
+		{
+			name:    "unknown RecipeMixin version",
+			path:    "mixins/bad.yaml",
+			data:    []byte("kind: RecipeMixin\napiVersion: aicr.run/v9\nmetadata:\n  name: bad\nspec: {}\n"),
+			wantSub: `apiVersion "aicr.run/v9"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := newInMemoryProvider("invalid-catalog-"+tt.name, map[string][]byte{
+				"overlays/base.yaml": validBase,
+				tt.path:              tt.data,
+			})
+			t.Cleanup(func() { EvictCachedStore(provider) })
+
+			_, err := LoadMetadataStoreFor(t.Context(), provider)
+			if err == nil {
+				t.Fatal("LoadMetadataStoreFor() error = nil, want header rejection")
+			}
+			if !errors.Is(err, aicrerrors.New(aicrerrors.ErrCodeInvalidRequest, "")) {
+				t.Fatalf("error = %v, want ErrCodeInvalidRequest", err)
+			}
+			if got := aicrerrors.ExitCodeFromError(err); got != aicrerrors.ExitInvalidInput {
+				t.Fatalf("exit code = %d, want %d", got, aicrerrors.ExitInvalidInput)
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error %q does not contain %q", err, tt.wantSub)
+			}
+		})
 	}
 }
 

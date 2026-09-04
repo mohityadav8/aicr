@@ -464,16 +464,44 @@ identical to a sibling's — does not support the "validated against deployed
 config" claim and must not be declared. The snippet above shows the declaration
 shape only; it is not a declaration you should copy into an overlay.
 
+**When the distinguishing signal only exists after deployment**, declare it
+under the value's `readinessConstraints` instead of `constraints`. Both lists
+get the same catalog-load validation (names deduplicate per list; the same
+measurement path may appear in both, carrying a pre-condition at generation
+and a post-deployment state at readiness), but
+`readinessConstraints` are never evaluated at generation time — they route
+into `spec.validation.readiness.constraints` and are evaluated fail-closed by
+the `aicr validate` readiness pre-flight. Two kinds of state belong here:
+externally-grounded cluster state evaluated post-deployment (provider
+properties, node labels set at provisioning), and **deployment-outcome
+checks** — properties the value's own workload creates (the post-deployment
+form of a self-falsified pre-condition, or a node label its DaemonSet applies
+after a successful install), which a fresh deployment cannot find in the
+pre-deployment snapshot that generation-time constraints are checked against.
+Only the externally-grounded kind can **qualify** the value — establish that
+the cluster's pre-existing mode matches the selection. An outcome check
+observes post-deployment state without establishing which deployment
+produced it: the readiness gate compares only the snapshot value, with no
+deployment identity, owner, or timestamp binding, so a marker left by an
+earlier deployment satisfies a later check. Declare a workload-written
+marker only when its producer owns the marker's full lifecycle — clearing
+or versioning it when the outcome no longer holds. And because every
+value's own success satisfies its own markers, an outcome check can never
+distinguish one value from another (ADR-015, "Self-rendered readings do
+not qualify").
+
 **Constraint names must be measurement paths a supported snapshot producer
 actually emits** — a collector, or a provider projection attached at the
 snapshot orchestration layer (e.g. `K8s.aks-gpu-pools.gpu-driver` from
-`aicr snapshot --aks-gpu-pools`) — in
+`aicr snapshot --aks-gpu-pools`, or `K8s.oke-addons.nvidia-gpu-plugin` from
+`aicr snapshot --oke-addons`) — in
 `{Type}.{Subtype}.{Key}` form. The type must be one the snapshot carries —
 `K8s`, `GPU`, `OS`, `SystemD`, `NodeTopology`, or `NetworkTopology`.
 
 **Paths are validated when recipe data is loaded, not when a snapshot is
 evaluated.** Every constraint name in `spec.constraints`,
-`spec.validation.readiness.constraints`, and `spec.profile.values.*.constraints`
+`spec.validation.readiness.constraints`, `spec.profile.values.*.constraints`,
+and `spec.profile.values.*.readinessConstraints`
 is checked against the measurement catalog (`pkg/measurement/catalog.go`) as the
 overlay, mixin, or base file is read. A path the catalog cannot address fails
 the load with the file, the field, and — where there is a near match — a
@@ -548,7 +576,7 @@ directions fail closed on a truncated node list (a snapshot captured with
 reading), on an empty GPU-node universe, and on malformed or ambiguous
 label readings (an encoding collision between a disambiguated entry and a
 distinct dotted label name — see #2003). It is consumed by the GKE
-`gpuStack` profile values (the positive form qualifies `driver-installer`, the
+`gpuStack` profile values (the positive form qualifies `bundle-installer`, the
 negated form `gke-default`), where each selected value's constraint is
 verified at generation when generating from a snapshot (criteria-only
 generation has no snapshot evaluator and defers entirely to the
@@ -574,6 +602,13 @@ mixed pool values fail closed against either selection. ADR-015 resolves
 this signal. The AKS family above was the first embedded adopter; the GKE
 family's `gpuStack` (device-plugin ownership over the #1755 node-set form,
 with `advertiser: external` on `gke-default`) is the second.
+
+**OKE** projects the `NvidiaGpuPlugin` cluster add-on's control-plane state
+into a snapshot reading (`K8s.oke-addons.nvidia-gpu-plugin`, from the
+`--oke-addons` dump). The same qualification rules apply: `oci-managed`
+requires `installed`, `operator-managed` requires `absent`, and any other
+add-on lifecycle state — or a snapshot captured without the dump — fails
+closed against either selection.
 
 No equivalent reading exists for other services yet. Declare a
 driver-ownership profile only once the signal for that service exists, and
@@ -861,7 +896,7 @@ spec:
 # recipes/registry.yaml
 - name: gpu-operator
   helm:
-    defaultVersion: v26.3.3  # Changed from v26.3.2
+    defaultVersion: v26.7.0  # Changed from v26.3.3
 ```
 
 **Adding components:**

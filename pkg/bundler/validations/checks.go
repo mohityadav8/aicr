@@ -19,7 +19,9 @@ import (
 	stderrors "errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -454,14 +456,15 @@ func driverAbsentRemedy(service recipe.CriteriaServiceType, os recipe.CriteriaOS
 				"(opt-out label absent) provision the GPU node pools with " +
 				"the GKE-managed driver install (node pool " +
 				"gpu-driver-version=default). With --profile " +
-				"gpuStack=driver-installer (pools labeled " +
-				"gke-no-default-nvidia-gpu-device-plugin=true) the label " +
-				"forfeits the managed install — deploy Google's standalone " +
-				"nvidia-driver-installer DaemonSet and create the pools " +
-				"with gpu-driver-version=disabled instead; see " +
+				"gpuStack=bundle-installer (pools labeled " +
+				"gke-no-default-nvidia-gpu-device-plugin=true and created " +
+				"with gpu-driver-version=disabled) the bundle's " +
+				"gcp-driver-installer component supplies the driver with a " +
+				"recipe-pinned version — do not deploy a standalone " +
+				"DaemonSet alongside it; see " +
 				"docs/integrator/gke-gpu-setup.md."
 		case recipe.CriteriaOSUbuntu:
-			// The pinned GPU Operator (v26.3.3) supports driver management
+			// The pinned GPU Operator supports driver management
 			// on GKE only on Ubuntu node images with containerd.
 			return "On GKE Ubuntu node images the GPU Operator can manage " +
 				"the driver: bundle in GPU-Operator-managed mode: " +
@@ -516,17 +519,15 @@ func componentOverrideKeys(componentName string, provider recipe.DataProvider) [
 // of the same name — see componentOverrideKeys for why it is duplicated.
 func mergeOverridesAcrossKeys[V any](allOverrides map[string]map[string]V, keys []string) map[string]V {
 	var merged map[string]V
-	for i := len(keys) - 1; i >= 0; i-- {
-		overrides, ok := allOverrides[keys[i]]
+	for _, key := range slices.Backward(keys) {
+		overrides, ok := allOverrides[key]
 		if !ok {
 			continue
 		}
 		if merged == nil {
 			merged = make(map[string]V, len(overrides))
 		}
-		for path, value := range overrides {
-			merged[path] = value
-		}
+		maps.Copy(merged, overrides)
 	}
 	return merged
 }
@@ -601,8 +602,7 @@ func effectiveComponentValues(ctx context.Context, recipeResult *recipe.RecipeRe
 		// from the outermost code. Non-coded errors default to
 		// invalid-request — the recipe content is what failed to resolve.
 		code := aicrerrors.ErrCodeInvalidRequest
-		var structured *aicrerrors.StructuredError
-		if stderrors.As(err, &structured) {
+		if structured, ok := stderrors.AsType[*aicrerrors.StructuredError](err); ok {
 			code = structured.Code
 		}
 		return nil, aicrerrors.WrapWithContext(code,
@@ -643,11 +643,11 @@ func effectiveComponentValues(ctx context.Context, recipeResult *recipe.RecipeRe
 // path.Clean'd (trailing-slash spellings compare equal, mirroring
 // pkg/recipe/driver_root_lockstep_test.go), declared empty string →
 // the default (the operator's own transformForDriverInstallDir treats
-// "" identically to the default, gpu-operator v26.3.3). An explicitly
+// "" identically to the default, gpu-operator v26.7.0). An explicitly
 // null or non-map hostPaths section is rejected with a blocking
 // message: Helm null-coalescing deletes a null key together with its
 // chart defaults, so the chart's unconditional .Values.hostPaths.rootFS
-// access (clusterpolicy.yaml, v26.3.3) fails at install. A declared
+// access (clusterpolicy.yaml, v26.7.0) fails at install. A declared
 // value that cleans to a relative path is rejected too — host-path
 // mounts require absolute paths.
 func resolveInstallDir(values map[string]any, componentName string) (string, bool, []string) {
@@ -680,7 +680,7 @@ func resolveInstallDir(values map[string]any, componentName string) (string, boo
 		// rejected rather than silently defaulted: the emitted values
 		// would carry it verbatim, and the pinned ClusterPolicy CRD
 		// types hostPaths.driverInstallDir as a string (gpu-operator
-		// v26.3.3 nvidia.com_clusterpolicies.yaml), so the install
+		// v26.7.0 nvidia.com_clusterpolicies.yaml), so the install
 		// fails while a defaulted check would have validated against
 		// /run/nvidia/driver instead.
 		return installDir, false, []string{fmt.Sprintf(
@@ -693,7 +693,7 @@ func resolveInstallDir(values map[string]any, componentName string) (string, boo
 	if dir == "" {
 		// Intentionally default-equivalent: the operator's own
 		// transformForDriverInstallDir early-returns on "" exactly like
-		// the default (gpu-operator v26.3.3, controllers/object_controls.go).
+		// the default (gpu-operator v26.7.0, controllers/object_controls.go).
 		return installDir, false, nil
 	}
 	cleaned := path.Clean(dir)
@@ -716,7 +716,7 @@ func resolveInstallDir(values map[string]any, componentName string) (string, boo
 
 // resolveDRARoot resolves the effective nvidia-dra-driver-gpu
 // nvidiaDriverRoot for Rule 2. Only a genuinely ABSENT key falls back to
-// the chart-default assumption ("/", DRA chart v0.4.1 values.yaml). A
+// the chart-default assumption ("/", DRA chart v0.5.0 values.yaml). A
 // present null, empty-string, or non-string value is rejected: unlike the
 // gpu-operator's driverInstallDir (where "" is default-equivalent, see
 // resolveInstallDir), the DRA chart pipes the raw value through
@@ -866,7 +866,7 @@ func nvsentinelDynamicGuardViolations(bundlerConfig *config.Config, componentNam
 //     null-coalescing deletes the key together with its chart defaults,
 //     so .Values.<section> is nil at render time and the gpu-operator
 //     templates fail on unconditional field access (e.g.
-//     .Values.driver.manager.repository in _helpers.tpl, v26.3.3) —
+//     .Values.driver.manager.repository in _helpers.tpl, v26.7.0) —
 //     ownership cannot be verified and the install would fail anyway.
 //     A non-boolean toggle is rejected because the chart renders the
 //     value unquoted, so YAML re-typing at install time can flip it to a
@@ -1155,14 +1155,31 @@ func CheckDriverOwnershipCoherence(ctx context.Context, componentName string, re
 	toolkitDisabled := toolkitToggle != nil && !*toolkitToggle
 
 	// Rule 1: recorded driverless cluster vs preinstalled-driver profile.
+	// An effectively enabled gcp-driver-installer disarms it: the bundle
+	// itself provisions the driver, so the driverless snapshot is the
+	// expected pre-deployment state (a correctly provisioned
+	// bundle-installer pool must be able to generate its own bundle). The
+	// supply check runs lazily inside the guard so its hard-fail surface
+	// exists only when Rule 1 would actually fire; there, a resolution
+	// failure for the installer's values fails closed as a hard error
+	// rather than degrading to the misleading driverless remediation.
 	if recipeResult.Metadata.GPUDriverState == recipe.GPUDriverStateAbsent && (!driverEnabled || toolkitDisabled) {
-		msgs = append(msgs, fmt.Sprintf(
-			"%s: the effective values assume a platform-preinstalled NVIDIA driver "+
-				"and container toolkit (driver.enabled=false and/or toolkit.enabled=false), "+
-				"but the snapshot that produced this recipe observed no NVIDIA kernel "+
-				"driver on the sampled GPU node. Deploying this bundle would leave GPU "+
-				"nodes driverless. %s",
-			componentName, driverAbsentRemedy(service, osCriteria, recipeResult.Metadata.SelectedProfile != nil)))
+		bundleSuppliesDriver, supplyErr := BundleSuppliesGKEDriver(ctx, recipeResult, bundlerConfig)
+		if supplyErr != nil {
+			for _, msg := range msgs {
+				slog.Warn(msg, logKeyComponent, componentName)
+			}
+			return msgs, []error{supplyErr}
+		}
+		if !bundleSuppliesDriver {
+			msgs = append(msgs, fmt.Sprintf(
+				"%s: the effective values assume a platform-preinstalled NVIDIA driver "+
+					"and container toolkit (driver.enabled=false and/or toolkit.enabled=false), "+
+					"but the snapshot that produced this recipe observed no NVIDIA kernel "+
+					"driver on the sampled GPU node. Deploying this bundle would leave GPU "+
+					"nodes driverless. %s",
+				componentName, driverAbsentRemedy(service, osCriteria, recipeResult.Metadata.SelectedProfile != nil)))
+		}
 	}
 
 	installDir, installDirDeclared, hostPathMsgs := resolveInstallDir(values, componentName)
@@ -1229,17 +1246,62 @@ const nvsentinelAssumeDriverInstalledOverrideSet = "--set nv-sentinel:labeler.as
 // so the override path is subchart-scoped rather than top-level.
 const nvsentinelDriverLabelPath = "labeler.assumeDriverInstalled"
 
-// gkeDriverInstallerProfileValue is the GKE gpuStack profile value whose
-// documented operational prerequisite is Google's standalone
-// nvidia-driver-installer DaemonSet (recipes/overlays/gke-cos.yaml). That
-// DaemonSet's pods ARE a driver pod the NVSentinel labeler detects, so
-// this value is the one driver.enabled=false shape that the label gate
-// below must not reject.
-const gkeDriverInstallerProfileValue = "driver-installer"
+// gkeBundleInstallerProfileValue is the GKE gpuStack value under which the
+// bundle's gcp-driver-installer component (issue #1716) carries the
+// cos-gpu-installer DaemonSet. Its pods ARE a driver pod the NVSentinel
+// labeler detects, so the label gate below must not reject this value.
+const gkeBundleInstallerProfileValue = "bundle-installer"
 
 // gpuStackProfileName is the ADR-015 configuration-profile name that
 // selects who installs the GPU driver on AKS and GKE.
 const gpuStackProfileName = "gpuStack"
+
+// gcpDriverInstallerComponentName is the values-gated GKE COS driver
+// component (issue #1716): present unconditionally in the GKE COS
+// composition, it renders the cos-gpu-installer DaemonSet only when its
+// nested installer.enabled gate is on.
+const gcpDriverInstallerComponentName = "gcp-driver-installer"
+
+// BundleSuppliesGKEDriver reports whether the composed bundle carries an
+// effectively enabled gcp-driver-installer — i.e. the bundle itself
+// provisions the NVIDIA kernel driver, so metadata.gpuDriverState=absent
+// is the expected pre-deployment state of a correctly provisioned pool
+// (gpu-driver-version=disabled) rather than a misconfiguration. It keys
+// off the EFFECTIVE installer gate (recipe values plus any --set
+// overrides in bundlerConfig), not the selected profile name: a --set
+// that flips the gate must flip this answer with it. The gate mirrors
+// the manifest template exactly (toString(installer.enabled) == "true"),
+// so only a value that actually renders the DaemonSet counts as a
+// producer; anything else — absent, false, or an unrecognized type —
+// leaves the driverless Rule 1 gate armed (fail closed). The lookup runs
+// against the declared-union view so a subset bundle
+// (--bundlers gpu-operator) still observes the installer its sibling
+// bundle carries. bundlerConfig may be nil (the resolution-time caller
+// in pkg/client/v1 has no override channel).
+func BundleSuppliesGKEDriver(ctx context.Context, recipeResult *recipe.RecipeResult, bundlerConfig *config.Config) (bool, error) {
+	if recipeResult == nil {
+		return false, nil
+	}
+	unionView := declaredUnionView(recipeResult)
+	ref := unionView.GetComponentRef(gcpDriverInstallerComponentName)
+	if ref == nil {
+		return false, nil
+	}
+	keys := componentOverrideKeys(gcpDriverInstallerComponentName, unionView.DataProvider())
+	if componentDisabled(ref, bundlerConfig, keys) {
+		return false, nil
+	}
+	values, err := effectiveComponentValues(ctx, unionView, bundlerConfig,
+		gcpDriverInstallerComponentName, keys, "bundle-supplied driver detection")
+	if err != nil {
+		return false, err
+	}
+	installer, ok := values["installer"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	return fmt.Sprint(installer["enabled"]) == "true", nil
+}
 
 // resolveGPUOperatorRef looks up the GPU Operator's ComponentRef by
 // trying every known name variant in turn, mirroring
@@ -1315,18 +1377,19 @@ func nvsentinelAssumesDriverInstalled(values map[string]any) bool {
 // Operator installs no driver.
 //
 // One shipping configuration qualifies: GKE COS with
-// --profile gpuStack=driver-installer, whose documented prerequisite is
+// --profile gpuStack=bundle-installer, whose bundle-carried installer is
 // Google's standalone nvidia-driver-installer DaemonSet on pools created
-// with gpu-driver-version=disabled (recipes/overlays/gke-cos.yaml). The
-// labeler's driver-pod detection sees those pods, so the driver.installed
-// label IS applied and the gate below must stay silent. Its sibling value
-// gke-default bakes the driver into the node at pool creation, so no
-// driver pod exists there — that value is affected.
+// with gpu-driver-version=disabled (recipes/overlays/gke-cos.yaml), the
+// bundle's gcp-driver-installer component carries the cos-gpu-installer
+// DaemonSet. The labeler's driver-pod detection sees those pods, so the
+// driver.installed label IS applied and the gate below must stay silent.
+// The sibling value gke-default bakes the driver into the node at pool
+// creation, so no driver pod exists there — that value is affected.
 //
 // The exemption is scoped to GKE COS recipes, not to the profile
 // identifier alone: profile names are not reserved, and an external
 // --data overlay on any service can declare a gpuStack profile whose
-// value happens to be named driver-installer — with no Google installer
+// value happens to be named bundle-installer — with no installer
 // DaemonSet ever deploying. Fail closed on anything but the one shape
 // the embedded catalog documents (recipes/overlays/gke-cos.yaml); a
 // recipe without criteria stays blocked for the same reason.
@@ -1341,7 +1404,7 @@ func labelerObservesDriverPod(recipeResult *recipe.RecipeResult) bool {
 	if selected == nil {
 		return false
 	}
-	return selected.Name == gpuStackProfileName && selected.Value == gkeDriverInstallerProfileValue
+	return selected.Name == gpuStackProfileName && selected.Value == gkeBundleInstallerProfileValue
 }
 
 // NVSENTINEL GATE POLICY — what an nvsentinel gate means when parts of
@@ -1399,7 +1462,7 @@ func labelerObservesDriverPod(recipeResult *recipe.RecipeResult) bool {
 //     --set/--set-json overrides), so the documented
 //     GPU-Operator-managed override set clears the gate,
 //   - no other driver pod source the labeler recognizes exists
-//     (labelerObservesDriverPod — GKE gpuStack=driver-installer), and
+//     (labelerObservesDriverPod — GKE gpuStack=bundle-installer), and
 //   - labeler.assumeDriverInstalled is not truthy in nvsentinel's
 //     effective values.
 //
@@ -1642,7 +1705,7 @@ func CheckNVSentinelDriverLabelDetectable(ctx context.Context, componentName str
 }
 
 // defaultRuntimeClassName is the shared chart default: the gpu-operator
-// chart ships operator.runtimeClass: nvidia (v26.3.3, verified against
+// chart ships operator.runtimeClass: nvidia (v26.7.0, verified against
 // the pinned chart values), and nvsentinel's metadata-collector subchart
 // ships runtimeClassName: "nvidia" (v1.9.0, charts/metadata-collector/
 // values.yaml:31). Either side left unset therefore resolves to this
