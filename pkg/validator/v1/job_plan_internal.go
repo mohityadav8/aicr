@@ -116,11 +116,23 @@ const (
 	// same literals live in validators/conformance/workload_sandboxing_check.go.
 	sandboxRuntimeClassEnv = "AICR_SANDBOX_RUNTIME_CLASS"
 	sandboxProbeImageEnv   = "AICR_SANDBOX_PROBE_IMAGE"
+	// ImagePullSecretsEnv carries the --image-pull-secret names, comma-separated,
+	// to every validator pod, so a check that creates a per-run namespace can
+	// copy the Secrets there and attach them to its probe pods; the names are
+	// the only thing forwarded, the Secrets stay in the validator namespace.
+	// Exported so the pod side (validators.ImagePullSecretsEnv) reads the same
+	// constant instead of a mirrored literal.
+	ImagePullSecretsEnv = "AICR_IMAGE_PULL_SECRETS" //nolint:gosec // G101: env var name, not a credential
 
 	// inferencePerfNoCleanupEnv, when truthy, makes the inference-perf validator
 	// leave its namespace/DGD/workers/frontend/AIPerf Job in place after the run
 	// for post-mortem inspection. Forwarded only to the inference-perf pod.
 	inferencePerfNoCleanupEnv = "AICR_INFERENCE_PERF_NO_CLEANUP"
+
+	// GangSchedulingCheckName is the catalog name of the gang-scheduling
+	// conformance check, the only one defaults.EnvRunaiProjectNamespace is
+	// forwarded to.
+	GangSchedulingCheckName = "gang-scheduling"
 )
 
 // hfTokenEnvVar is the environment variable name used to forward the
@@ -138,6 +150,7 @@ func buildEnv(
 	tolerations []corev1.Toleration,
 	imageRegistryOverride string,
 	imageTagOverride string,
+	imagePullSecrets []string,
 ) []corev1.EnvVar {
 
 	env := []corev1.EnvVar{
@@ -169,6 +182,9 @@ func buildEnv(
 			Name:  "AICR_TOLERATIONS",
 			Value: serializeTolerations(tolerations),
 		})
+	}
+	if names := nonEmptyNames(imagePullSecrets); len(names) > 0 {
+		env = append(env, corev1.EnvVar{Name: ImagePullSecretsEnv, Value: strings.Join(names, ",")})
 	}
 
 	// Add CLI version and commit
@@ -262,6 +278,13 @@ func buildEnv(
 		}
 	}
 
+	// Forward the Run:ai Project namespace to the gang-scheduling check only.
+	// On a recipe that declares runai-cluster the check runs its test pods
+	// there and fails without it; the pod validates the value itself.
+	if v := strings.TrimSpace(os.Getenv(defaults.EnvRunaiProjectNamespace)); v != "" && entry.Name == GangSchedulingCheckName {
+		env = append(env, corev1.EnvVar{Name: defaults.EnvRunaiProjectNamespace, Value: v})
+	}
+
 	// Add catalog entry's custom env vars. Orchestrator-controlled env vars are
 	// deliberately skipped here: they must come only from the process
 	// environment (forwarded above), never from the in-repo catalog. Appending
@@ -272,13 +295,25 @@ func buildEnv(
 		if e.Name == hfTokenEnvVar || e.Name == requireScopedInferenceGatewayEnv || e.Name == inferencePerfNoCleanupEnv || e.Name == ncclRuntimeImageEnv || e.Name == driverRuntimeImageEnv {
 			continue
 		}
-		if e.Name == sandboxRuntimeClassEnv || e.Name == sandboxProbeImageEnv {
+		if e.Name == sandboxRuntimeClassEnv || e.Name == sandboxProbeImageEnv || e.Name == ImagePullSecretsEnv || e.Name == defaults.EnvRunaiProjectNamespace {
 			continue
 		}
 		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
 	}
 
 	return env
+}
+
+// nonEmptyNames returns names with blank entries dropped, so a flag given an
+// empty value does not forward a dangling separator.
+func nonEmptyNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // buildVolumes creates volumes for snapshot and validation ConfigMaps
