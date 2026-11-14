@@ -15,8 +15,8 @@
 # NVIDIA container toolkit device-isolation hardening for EKS AL2023 GPU nodes
 # (h100/gb200/gb300/rtx-pro-6000-eks-amazonlinux-inference, issue #3272).
 #
-# nodewright-customizations is disabled wholesale on these leaves (nvidia-setup
-# is Debian/Ubuntu-only: it pins an Ubuntu kernel package and DKMS-builds EFA),
+# nodewright-customizations is disabled wholesale on these leaves (the
+# inherited tuning manifests are not validated on AL2023),
 # so this is a separate manifest-only component, not a toolkit-hardening-aks.yaml
 # manifestFiles addition to nodewright-customizations — manifestFiles merge
 # additively and the inherited tuning.yaml cannot be cleared.
@@ -67,6 +67,22 @@ spec:
       containerSHA: sha256:5414b06e52c090d0842704f2580798064362d771f12421ccc8888186b5f5a3cf
       configMap:
         apply.sh: |
+          #!/bin/bash
+          set -euo pipefail
+          CONFIG=/etc/nvidia-container-runtime/config.toml
+          if [ ! -f "$CONFIG" ]; then
+            echo "no $CONFIG on this node, skipping"
+            exit 0
+          fi
+          if ! command -v nvidia-ctk >/dev/null 2>&1; then
+            echo "nvidia-ctk not found on this node, skipping"
+            exit 0
+          fi
+          nvidia-ctk config --in-place \
+            --set accept-nvidia-visible-devices-envvar-when-unprivileged=false \
+            --set accept-nvidia-visible-devices-as-volume-mounts=true
+          echo "nvidia-container-runtime hardened at config.toml root"
+        config.sh: |
           #!/bin/bash
           set -euo pipefail
           CONFIG=/etc/nvidia-container-runtime/config.toml

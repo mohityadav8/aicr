@@ -450,7 +450,7 @@ components:
   # Hardens /etc/nvidia-container-runtime/config.toml on EKS AL2023 (Amazon
   # Linux) GPU nodes using the NVIDIA-preinstalled AMI. Separate from
   # nodewright-customizations, which is disabled wholesale on those leaves
-  # (nvidia-setup is Debian/Ubuntu-only). Manifest-only. See issue #3272.
+  # (the inherited tuning manifests are not validated on AL2023). Manifest-only. See issue #3272.
   - name: al2023-toolkit-hardening
     displayName: al2023-toolkit-hardening
     class: core
